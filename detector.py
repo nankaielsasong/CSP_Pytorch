@@ -4,7 +4,10 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 import cv2
-# import hickle as hkl
+from .utils import parse
+
+# from utils import L2Normalization
+
 # from utils import MaxPool2dSamePadding
 
 
@@ -16,8 +19,60 @@ class EmptyLayer(nn.Module):
         return x
 
 
+class L2Normalization(nn.Module):
+    '''
+    Performs L2 normalization on the input tensor with a learnable scaling parameter
+    as described in the paper "Parsenet: Looking Wider to See Better" (see references)
+    and as used in the original SSD model.
+
+    Arguments:
+        gamma_init (int): The initial scaling parameter. Defaults to 20 following the
+            SSD paper.
+
+    Input shape:
+        4D tensor of shape `(batch, channels, height, width)` 
+
+    Returns:
+        The scaled tensor. Same shape as the input tensor.
+
+    References:
+        http://cs.unc.edu/~wliu/papers/parsenet.pdf
+    '''
+
+    def __init__(self, gamma_init=20, axis=1, norm_shape=1): 
+        super(L2Normalization, self).__init__()
+        self.axis = axis
+        self.gamma_init = gamma_init
+        gamma = self.gamma_init * np.ones(norm_shape)
+        self.gamma = nn.Parameter(torch.tensor(gamma))
+    
+    
+    def forward(self, x):
+        output = F.normalize(x, p=2, dim=self.axis)
+        output *= self.gamma.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand(x.shape[0], -1, x.shape[2], x.shape[3])
+        return output
+
+
 
 class CatLayer(nn.Module):
+    # def __init__(self, catinfo, index, output_filters):
+    #     super(CatLayer, self).__init__()
+    #     layers = [int(i) for i in catinfo['layers'].split(',')]
+    #     deconv_filters = [int(i) for i in catinfo['filters'].split(',')]
+    #     deconv_size = [int(i) for i in catinfo['size'].split(',')]
+    #     deconv_stride = [int(i) for i in catinfo['stride'].split(',')]
+    #     deconv_padding = [int(i) for i in catinfo['pad'].split(',')]
+    #     gamma_init = [int(i) for i in catinfo['gamma_init'].split(',')]
+    #     self.deconv_list = []
+    #     self.norm_list = [] 
+            
+    #     for i, l_ind in enumerate(layers):
+    #         in_filters = output_filters[l_ind + index]
+    #         deconv = nn.ConvTranspose2d(in_filters, deconv_filters[i], deconv_size[i], stride=deconv_stride[i], padding=deconv_padding[i])
+    #         L2_norm = L2Normalization(gamma_init[i], 1, deconv_filters[i])
+    #         self.deconv_list.append(deconv)
+    #         self.norm_list.append(L2_norm)
+
     def __init__(self, catinfo, index, output_filters):
         super(CatLayer, self).__init__()
         layers = [int(i) for i in catinfo['layers'].split(',')]
@@ -25,22 +80,22 @@ class CatLayer(nn.Module):
         deconv_size = [int(i) for i in catinfo['size'].split(',')]
         deconv_stride = [int(i) for i in catinfo['stride'].split(',')]
         deconv_padding = [int(i) for i in catinfo['pad'].split(',')]
-        self.deconv_list = []
-        self.bn_list = [] 
-            
+        gamma_init = [int(i) for i in catinfo['gamma_init'].split(',')]
+       
         for i, l_ind in enumerate(layers):
             in_filters = output_filters[l_ind + index]
             deconv = nn.ConvTranspose2d(in_filters, deconv_filters[i], deconv_size[i], stride=deconv_stride[i], padding=deconv_padding[i])
-            bn = nn.BatchNorm2d(deconv_filters[i])
-            self.deconv_list.append(deconv)
-            self.bn_list.append(bn)
+            self.add_module("deconv_{}".format(i), deconv)
+            L2_norm = L2Normalization(gamma_init[i], 1, deconv_filters[i])
+            self.add_module("L2norm_{}".format(i), L2_norm)
         
     
     def forward(self, xs):
         t = None
+        child_iter = self.children()
         for ind, x in enumerate(xs):
-            x = self.deconv_list[ind](x)
-            x = self.bn_list[ind](x)
+            x = next(child_iter)(x)
+            x = next(child_iter)(x)
             if t == None:
                 t = x
             else:
@@ -185,16 +240,15 @@ def create_modules(blocks):
         if x['type'] == 'convolutional':
             # torch.nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True, padding_mode='zeros')
             activation = x['activation']
-            try:
-                batch_normalize = int(x["batch_normalize"])
-                bias = False
-            except:
-                batch_normalize = 0
-                bias = True
             filters = int(x['filters'])
             kernel_size = int(x['size'])
             stride = int(x['stride'])
             padding = int(x['pad'])
+            try:
+                batch_normalize = int(x['batch_normalize'])
+            except:
+                batch_normalize = 0
+
             try:
                 padding_mode_tf = x['padding']
             except:
@@ -204,7 +258,7 @@ def create_modules(blocks):
             except:
                 dilation = 1
             
-            conv_same_padding = Conv2dSamePadding(prev_filters, filters, kernel_size, stride=stride, dilation=dilation, bias=bias, padding_mode_tf=padding_mode_tf)
+            conv_same_padding = Conv2dSamePadding(prev_filters, filters, kernel_size, stride=stride, dilation=dilation, padding_mode_tf=padding_mode_tf)
             
             module.add_module("conv_same_padding_{}".format(index), conv_same_padding)
 
@@ -237,6 +291,9 @@ def create_modules(blocks):
             else:
                 pass
         elif x['type'] == 'route':
+            print('*' * 10)
+            print(index)
+            print('*' * 10)
             # torch.nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=True, dilation=1, padding_mode='zeros')
             filters = [int(i) for i in x['filters'].split(',')]
             filters = sum(filters)
@@ -244,7 +301,10 @@ def create_modules(blocks):
             module.add_module('route_{}'.format(index), catlayer)
         elif x['type'] == 'shortcut':
             convolutional = int(x['convolutional'])
-            batch_normalize = x['batch_normalize']
+            try:
+                batch_normalize = x['batch_normalize']
+            except:
+                batch_normalize = 0
             from_ind = int(x['from'])
             if convolutional:
                 filters = int(x['filters'])
@@ -347,19 +407,27 @@ def get_test_input():
     return img_
 
 
-
 # test forward
 model = CSPNet("configs\\network_arch.cfg")
 input = get_test_input()
 pred = model(input, torch.cuda.is_available())
-torch.save(model.state_dict(), 'CSP_Pytorch_parmas.pkl')
+# torch.save(model.state_dict(), 'CSP_Pytorch_params1.pkl')
+
+weights_lst = parse("net_e382_l0.hdf5")
+weights_dict = collections.OrderedDict()
+torch_params_arch = torch.load('CSP_Pytorch_params1.pkl')
+for i, key in enumerate(torch_params_arch.keys()):
+    weights_dict[key] = weights_lst[i] if not isinstance(weights_lst[i], str) else torch_params_arch[key]
+
+torch.save(weights_dict, "CSP_Pytorch_e382_l0,.pkl")
+
 
 # print('*' * 20)
 # print('load model....')
 # input = get_test_input()
-# model = torch.load('net_e382_l0.hdf5')
+# model = torch.load('csp_weights.pkl')
 # print('done')
 # print('*' * 20)
 # pred = model(input, torch.cuda.is_available())
 # print(pred)
-# model.load_state_dict(torch.load(PATH))
+# # model.load_state_dict(torch.load(PATH))
