@@ -33,9 +33,10 @@ def np_to_torch(arr):
 
 
 
-def parse_res_params(alp_lst_out, stage_num):
+def parse_res_params(f, alp_lst_out, stage_num):
     count = 0
     weights_lst = []
+    alp_lst_in = ['a', 'b', 'c']
     for i in alp_lst_out:
         for j in alp_lst_in:
             level_1 = 'res' + str(stage_num) + i + '_branch2' + j
@@ -127,7 +128,7 @@ def parse(hdf5_file_path):
                 
     # res2b_branch2a -> bn2b_branch2a -> res2b_branch2b -> bn2b_branch2b -> res2b_branch2c -> bn2b_branch2c
     # res2c_branch2a -> bn2c_branch2a -> res2c_branch2b -> bn2c_branch2b -> res2c_branch2c -> bn2c_branch2c
-    w, c = parse_res_params(alp_lst_out_1, 2)
+    w, c = parse_res_params(f, alp_lst_out_1, 2)
     weights_lst.extend(w)
     count += c
 
@@ -142,7 +143,7 @@ def parse(hdf5_file_path):
     # res3b_branch2a -> bn3b_branch2a -> res3b_branch2b -> bn3b_branch2b -> res3b_branch2c -> bn2b_branch2c
     # res3c_branch2a -> bn3c_branch2a -> res3c_branch2b -> bn3c_branch2b -> res3c_branch2c -> bn2c_branch2c
     # res3d_branch2a -> bn3d_branch2a -> res3d_branch2b -> bn3d_branch2b -> res3d_branch2c -> bn2d_branch2c
-    w, c = parse_res_params(alp_lst_out_2, 3)
+    w, c = parse_res_params(f, alp_lst_out_2, 3)
     weights_lst.extend(w)
     count += c
 
@@ -160,7 +161,7 @@ def parse(hdf5_file_path):
     # res4d_branch2a -> bn4d_branch2a -> res4d_branch2b -> bn4d_branch2b -> res4d_branch2c -> bn4d_branch2c
     # res4e_branch2a -> bn4e_branch2a -> res4e_branch2b -> bn4e_branch2b -> res4e_branch2c -> bn4e_branch2c
     # res4f_branch2a -> bn4f_branch2a -> res4f_branch2b -> bn4f_branch2b -> res4f_branch2c -> bn4f_branch2c
-    w, c = parse_res_params(alp_lst_out_3, 4)
+    w, c = parse_res_params(f, alp_lst_out_3, 4)
     weights_lst.extend(w)
     count += c
 
@@ -175,27 +176,11 @@ def parse(hdf5_file_path):
     # res5b_branch2a -> bn5b_branch2a -> res5b_branch2b -> bn5b_branch2b -> res5b_branch2c -> bn5b_branch2c
     # res5c_branch2a -> bn5c_branch2a -> res5c_branch2b -> bn5c_branch2b -> res5c_branch2c -> bn5c_branch2c
     # res5d_branch2a -> bn5d_branch2a -> res5d_branch2b -> bn5d_branch2b -> res5d_branch2c -> bn5d_branch2c
-    w, c = parse_res_params(alp_lst_out_1, 5)
+    w, c = parse_res_params(f, alp_lst_out_1, 5)
     weights_lst.extend(w)
     count += c
 
     # route layer weights
-    # P3up 
-    # [P3up_1][bias:0] / [kernel:0]
-    # [P3norm][P3norm_1][P3norm_gamma:0]
-    weights_lst.append(tf_to_torch(f['P3up']['P3up_1']['kernel:0'][()]))
-    weights_lst.append(np_to_torch(f['P3up']['P3up_1']['bias:0'][()]))
-    weights_lst.append(np_to_torch(f['P3norm']['P3norm_1']['P3norm_gamma:0'][()]))
-    count += 3
-
-    # P4up 
-    # [P4up1][bias:0] / [kernel:0]
-    # [P4norm][P4norm1][P3norm_gamma:0]
-    weights_lst.append(tf_to_torch(f['P4up']['P4up_1']['kernel:0'][()]))
-    weights_lst.append(np_to_torch(f['P4up']['P4up_1']['bias:0'][()]))
-    weights_lst.append(np_to_torch(f['P4norm']['P4norm_1']['P4norm_gamma:0'][()]))
-    count += 3
-
     # P5up 
     # [P5up1][bias:0] / [kernel:0]
     # [P5norm][P5norm1][P5norm_gamma:0]
@@ -203,6 +188,25 @@ def parse(hdf5_file_path):
     weights_lst.append(np_to_torch(f['P5up']['P5up_1']['bias:0'][()]))
     weights_lst.append(np_to_torch(f['P5norm']['P5norm_1']['P5norm_gamma:0'][()]))
     count += 3
+
+
+    # P4up
+    # [P4up1][bias:0] / [kernel:0]
+    # [P4norm][P4norm1][P3norm_gamma:0]
+    weights_lst.append(tf_to_torch(f['P4up']['P4up_1']['kernel:0'][()]))
+    weights_lst.append(np_to_torch(f['P4up']['P4up_1']['bias:0'][()]))
+    weights_lst.append(np_to_torch(f['P4norm']['P4norm_1']['P4norm_gamma:0'][()]))
+    count += 3
+
+
+    # P3up
+    # [P3up_1][bias:0] / [kernel:0]
+    # [P3norm][P3norm_1][P3norm_gamma:0]
+    weights_lst.append(tf_to_torch(f['P3up']['P3up_1']['kernel:0'][()]))
+    weights_lst.append(np_to_torch(f['P3up']['P3up_1']['bias:0'][()]))
+    weights_lst.append(np_to_torch(f['P3norm']['P3norm_1']['P3norm_gamma:0'][()]))    
+    count += 3
+
 
     # feat
     # bn_feat

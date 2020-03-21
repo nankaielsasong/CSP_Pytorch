@@ -4,7 +4,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 import numpy as np
 import cv2
-from .utils import parse
+from utils import parse
+import collections
 
 # from utils import L2Normalization
 
@@ -96,7 +97,7 @@ class CatLayer(nn.Module):
         for ind, x in enumerate(xs):
             x = next(child_iter)(x)
             x = next(child_iter)(x)
-            if t == None:
+            if t is None:
                 t = x
             else:
                 t = torch.cat((t, x), 1)
@@ -398,7 +399,7 @@ class CSPNet(nn.Module):
         return [outputs[i] for i in output_ind]     
 
 def get_test_input():
-    img = cv2.imread('C:\\Users\\Elsa\\Pictures\\LPFOX.jfif')
+    img = cv2.imread('/home/zk/Desktop/lena.jpeg')
     img = cv2.resize(img, (336, 448)) # width, height, channel
     img_ = img[:, :, ::-1].transpose(2, 0, 1)
     img_ = img_[np.newaxis, :, :, :] / 255.0
@@ -408,26 +409,20 @@ def get_test_input():
 
 
 # test forward
-model = CSPNet("configs\\network_arch.cfg")
+model = CSPNet("configs/network_arch.cfg")
 input = get_test_input()
 pred = model(input, torch.cuda.is_available())
-# torch.save(model.state_dict(), 'CSP_Pytorch_params1.pkl')
+torch.save(model.state_dict(), 'CSP_Pytorch_params.pkl')
 
 weights_lst = parse("net_e382_l0.hdf5")
 weights_dict = collections.OrderedDict()
-torch_params_arch = torch.load('CSP_Pytorch_params1.pkl')
+torch_params_arch = torch.load('CSP_Pytorch_params.pkl')
 for i, key in enumerate(torch_params_arch.keys()):
     weights_dict[key] = weights_lst[i] if not isinstance(weights_lst[i], str) else torch_params_arch[key]
 
-torch.save(weights_dict, "CSP_Pytorch_e382_l0,.pkl")
+torch.save(weights_dict, "CSP_Pytorch_e382_l0.pkl")
 
-
-# print('*' * 20)
-# print('load model....')
-# input = get_test_input()
-# model = torch.load('csp_weights.pkl')
-# print('done')
-# print('*' * 20)
-# pred = model(input, torch.cuda.is_available())
-# print(pred)
-# # model.load_state_dict(torch.load(PATH))
+print('load model....')
+model.load_state_dict(torch.load('CSP_Pytorch_e382_l0.pkl'))
+pred = model(input, torch.cuda.is_available())
+print(pred)
