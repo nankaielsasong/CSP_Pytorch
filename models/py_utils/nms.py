@@ -1,20 +1,29 @@
 import numpy as np
+import torch
+import cv2
+import sys
+import visdom
+sys.path.append('...')
+from utils import visualize
 
 def format_img(img, config):
-	""" formats an image for model prediction based on config """
-	img = format_img_channels(img, config)
-	return img 
+    """ formats an image for model prediction based on config """
+    img = format_img_channels(img, config)
+    return img 
 
 
 def format_img_channels(img, config):
-	""" formats the image channels based on config """
-    # batch, channel, height, width 
-	img = img.astype(np.float32)
-	img[0, :, :] -= config.img_channel_mean[0]
-	img[1, :, :] -= config.img_channel_mean[1]
-	img[2, :, :] -= config.img_channel_mean[2]
-	img = np.expand_dims(img, axis=0)
-	return img
+    """ formats the image channels based on config """
+    # height, width, channel
+    img = img.astype(np.float32)
+    cfg = [float(x) for x in config['img_channel_mean'].split(',')]
+    img[:, :, 0] -= cfg[0]
+    img[:, :, 1] -= cfg[1]
+    img[:, :, 2] -= cfg[2]
+    img = torch.tensor(img).float()
+    img = img.permute(2, 0, 1)
+    img = torch.unsqueeze(img, 0)
+    return img
 
 
 def soft_bbox_vote(det, thre=0.35, score=0.05):

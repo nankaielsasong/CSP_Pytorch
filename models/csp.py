@@ -1,3 +1,5 @@
+import os
+import importlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -5,8 +7,10 @@ from torch.autograd import Variable
 import numpy as np
 import cv2
 import collections
-from py_utils import L2Normalization, MaxPool2dSamePadding, Conv2dSamePadding, CatLayer, EmptyLayer
-from .utils import parse_cfg
+import sys
+sys.path.append('../')
+from .py_utils import L2Normalization, MaxPool2dSamePadding, Conv2dSamePadding, CatLayer, EmptyLayer
+from utils import parse_cfg
 
 
 
@@ -81,9 +85,6 @@ def create_modules(blocks):
             else:
                 pass
         elif x['type'] == 'route':
-            print('*' * 10)
-            print(index)
-            print('*' * 10)
             # torch.nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=True, dilation=1, padding_mode='zeros')
             filters = [int(i) for i in x['filters'].split(',')]
             filters = sum(filters)
@@ -152,7 +153,6 @@ class CSPNet(nn.Module):
         output_ind = []
         for i, module in enumerate(modules):
             module_type = module['type']
-            print(str(i) + ': ' + module_type)
             if module_type == 'convolutional' or module_type == 'padding' or module_type == 'pooling':
                 x = self.module_list[i](x)
             elif module_type == 'route':
@@ -183,7 +183,6 @@ class CSPNet(nn.Module):
                     pass
                 output_ind.append(i)
             outputs[i] = x
-            print(x.shape)
 
         return [outputs[i] for i in output_ind]     
 

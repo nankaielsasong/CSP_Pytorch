@@ -4,14 +4,21 @@
 # remap bounding box to original image size
 # NMS
 
-from nms import soft_bbox_vote
+from .nms import soft_bbox_vote, format_img
+import numpy as np
+import torch
+import cv2
+import visdom
+import sys
+sys.path.append('.../')
+from utils import visualize
 
 def parse_wider_offset(Y, config):
-    score = config.center_conf_thresh # 0.05
-    soft_nms_thresh = config.soft_nms_thresh # 0.6
-    soft_score = config.soft_score_thresh # 0.05
-    down = config.down_scale # 4
-    size_test = config.size_test
+    score = float(config['center_conf_thresh']) # 0.05
+    soft_nms_thresh = float(config['soft_nms_thresh']) # 0.6
+    soft_score = float(config['soft_score_thresh']) # 0.05
+    down = int(config['down_scale']) # 4
+    size_test = config['size_test']
 
     # tensorflow: (batch, height, widht, channel)
     # pytorch: (batch, channel, height, width)
@@ -33,32 +40,33 @@ def parse_wider_offset(Y, config):
             x1, y1 = max(0, (x_c[i] + o_x + 0.5) * down - w / 2), max(0, (y_c[i] + o_y + 0.5) * down - h / 2)
             x1, y1 = min(x1, size_test[1]), min(y1, size_test[0])
             boxs.append([x1, y1, min(x1 + w, size_test[1]), min(y1 + h, size_test[0]), s]) # (x1, y1, x2, y2)
-        boxs = np.asarray(boxs, dtype=np.float32)
-
-    boxs = bbox_processing.soft_bbox_vote(boxs, thre=soft_nms_thresh, score=soft_score)
+   
+    boxs = np.asarray(boxs, dtype=np.float32)
+    boxs = soft_bbox_vote(boxs, thre=soft_nms_thresh, score=soft_score)
     return boxs
 
 
 def detect_face(img, model, config, scale=1):
     # flip = False
-    flip = config.flip
+    flip = int(config['flip'])
     # use scale to enlarge image for small faces while shrink image for large face
-    img_h, img_w = img.shape[:2] # tensorflow [batch, heigt, width, channel] pytorch [batch, channel, height, width]
+    img_h, img_w = img.shape[:2] # tensorflow [batch, heigt, width, channel] pytorch [batch, channel, height, width] opencv=> (height, width, channel)
     img_h_new, img_w_new = int(np.ceil(scale * img_h / 16) * 16), int(np.ceil(scale * img_w / 16) * 16) 
     # np.ceil(scale * img_h / 16) is the height the final feature map
     # np.ceil(scale * img_h) * 16 is the remapped new height of the input image
     scale_h, scale_w = img_h_new / img_h, img_w_new / img_w 
+
     # actual shrink / enlarge scale
-
-    img_s = cv2.resize(img, None, None, fx=scale_w, fy=scale_h, interpolation=cv2.INTER_LINEAR)
+    img_s = cv2.resize(img, (0, 0), fx=scale_w, fy=scale_h, interpolation=cv2.INTER_LINEAR)
+    # img_s => height, width, channel
     # resize the img according to the actual scale
-    # img_h, img_w = img_s.shape[:2]
-    # print frame_number
-    config.size_test[0] = img_h_new
-    config.size_test[1] = img_w_new
+    config['size_test'] = [img_h_new, img_w_new]
 
-    x_rcnn = bbox_processing.format_img(img_s, config)
-    Y = model.predict(x_rcnn)
+    x_csp = format_img(img_s, config)
+
+    # visualize('input', 'images', x_csp, 'img456')
+
+    Y = model(x_csp, torch.cuda.is_available())
     # boxes = bbox_processing.parse_wider_offset(Y, config, score=0.05, nmsthre=0.6) # confidence thresh + soft nms
     boxes = parse_wider_offset(Y, config)
     if len(boxes) > 0:
@@ -74,8 +82,8 @@ def detect_face(img, model, config, scale=1):
     boxes_f = False
     if flip:
         img_sf = cv2.flip(img_s, 1)
-        x_rcnn = bbox_processing.format_img(img_sf, config)
-        Y = model.predict(x_rcnn)
+        x_csp = format_img(img_sf, config)
+        Y = model(x_csp, torch.cuda.is_available())
         # boxes = bbox_processing.parse_wider_offset(Y, config, score=0.05, nmsthre=0.6) # confidence thresh + soft nms
         boxes_f = parse_wider_offset(Y, config)
         if len(boxes_f) > 0:
@@ -143,13 +151,15 @@ def generate_bbox(img, model, config):
     max_im_shrink = (0x7fffffff / 577.0 / (img.shape[0] * img.shape[1])) ** 0.5  # the max size of input image
     shrink = max_im_shrink if max_im_shrink < 1 else 1
     det0 = detect_face(img, model, config)
-    det1 = im_det_ms_pyramid(img, model, config, max_im_shrink)
+    # print(det0)
+    # det1 = im_det_ms_pyramid(img, model, config, max_im_shrink)
+    # print(det1)
     # merge all test results via bounding box voting
     det = np.row_stack((det0, det1))
     # 去除小于 3 毫米的 bounding box
     keep_index = np.where(np.minimum(det[:, 2] - det[:, 0], det[:, 3] - det[:, 1]) >= 3)[0]
     det = det[keep_index, :]
-    dets = bbox_process.soft_bbox_vote(det, thre=0.4)
+    dets = soft_bbox_vote(det, thre=0.4)
     keep_index = np.where((dets[:, 2] - dets[:, 0] + 1) * (dets[:, 3] - dets[:, 1] + 1) >= 6 ** 2)[0]
     dets = dets[keep_index, :]
     return dets
