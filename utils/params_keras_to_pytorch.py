@@ -6,7 +6,7 @@
 
 import collections
 import torch
-import h5py
+# import h5py
 
 # f = open('CSP_Pytorch_params.pkl', 'rb')
 # data = torch.load('CSP_Pytorch_params1.pkl')

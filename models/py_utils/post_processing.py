@@ -1,165 +1,205 @@
-# confidence threshold: 0.05
-# generate bounding box according to center prediction and corresponding scale
-# adust center location according to offset branch
-# remap bounding box to original image size
-# NMS
-
-from .nms import soft_bbox_vote, format_img
 import numpy as np
-import torch
 import cv2
-import visdom
-import sys
-sys.path.append('.../')
-from utils import visualize
+import torch
+import math
 
-def parse_wider_offset(Y, config):
-    score = float(config['center_conf_thresh']) # 0.05
-    soft_nms_thresh = float(config['soft_nms_thresh']) # 0.6
-    soft_score = float(config['soft_score_thresh']) # 0.05
-    down = int(config['down_scale']) # 4
-    size_test = config['size_test']
-
-    # tensorflow: (batch, height, widht, channel)
-    # pytorch: (batch, channel, height, width)
-    # Y[0] -> center map; Y[1] -> hw_map; Y[2] -> offset_map
-    seman = Y[0][0, 0, :, :]
-    height = Y[1][0, 0, :, :]
-    width = Y[1][0, 1, :, :]
-    offset_y = Y[2][0, 0, :, :]
-    offset_x = Y[2][0, 1, :, :]
-    y_c, x_c = np.where(seman > score) # confidence threshold
-    boxs = []
-    if len(y_c) > 0:
-        for i in range(len(y_c)):
-            h = np.exp(height[y_c[i], x_c[i]]) * down
-            w = np.exp(width[y_c[i], x_c[i]]) * down
-            o_y = offset_y[y_c[i], x_c[i]]
-            o_x = offset_x[y_c[i], x_c[i]]
-            s = seman[y_c[i], x_c[i]]
-            x1, y1 = max(0, (x_c[i] + o_x + 0.5) * down - w / 2), max(0, (y_c[i] + o_y + 0.5) * down - h / 2)
-            x1, y1 = min(x1, size_test[1]), min(y1, size_test[0])
-            boxs.append([x1, y1, min(x1 + w, size_test[1]), min(y1 + h, size_test[0]), s]) # (x1, y1, x2, y2)
-   
-    boxs = np.asarray(boxs, dtype=np.float32)
-    boxs = soft_bbox_vote(boxs, thre=soft_nms_thresh, score=soft_score)
-    return boxs
-
-
-def detect_face(img, model, config, scale=1):
-    # flip = False
+def prepare_images(img, config):
+    height, width = config['testsize']
     flip = int(config['flip'])
-    # use scale to enlarge image for small faces while shrink image for large face
-    img_h, img_w = img.shape[:2] # tensorflow [batch, heigt, width, channel] pytorch [batch, channel, height, width] opencv=> (height, width, channel)
-    img_h_new, img_w_new = int(np.ceil(scale * img_h / 16) * 16), int(np.ceil(scale * img_w / 16) * 16) 
-    # np.ceil(scale * img_h / 16) is the height the final feature map
-    # np.ceil(scale * img_h) * 16 is the remapped new height of the input image
-    scale_h, scale_w = img_h_new / img_h, img_w_new / img_w 
-
-    # actual shrink / enlarge scale
-    img_s = cv2.resize(img, (0, 0), fx=scale_w, fy=scale_h, interpolation=cv2.INTER_LINEAR)
-    # img_s => height, width, channel
-    # resize the img according to the actual scale
-    config['size_test'] = [img_h_new, img_w_new]
-
-    x_csp = format_img(img_s, config)
-
-    # visualize('input', 'images', x_csp, 'img456')
-
-    Y = model(x_csp, torch.cuda.is_available())
-    # boxes = bbox_processing.parse_wider_offset(Y, config, score=0.05, nmsthre=0.6) # confidence thresh + soft nms
-    boxes = parse_wider_offset(Y, config)
-    if len(boxes) > 0:
-        # 最下边长 scale > 12 (length > 1.308 mm) 的 bounding box 
-        keep_index = np.where(np.minimum(boxes[:, 2] - boxes[:, 0], boxes[:, 3] - boxes[:, 1]) >= 12)[0]
-        boxes = boxes[keep_index, :]
-    if len(boxes) > 0:
-        boxes[:, 0:4:2] = boxes[:, 0:4:2] / scale_w # 此时的 boxes 是在 img_h_new 上检测出来的，所以还要还原到原来的 img_h 上 
-        boxes[:, 1:4:2] = boxes[:, 1:4:2] / scale_h
-    else:
-        boxes = np.empty(shape=[0, 5], dtype=np.float32)
-
-    boxes_f = False
+    channel_mean = [float(x) for x in config['channel_mean'].split(',')]
+    imgs = []
+    img = cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR)
+    imgs.append(img)
     if flip:
-        img_sf = cv2.flip(img_s, 1)
-        x_csp = format_img(img_sf, config)
-        Y = model(x_csp, torch.cuda.is_available())
-        # boxes = bbox_processing.parse_wider_offset(Y, config, score=0.05, nmsthre=0.6) # confidence thresh + soft nms
-        boxes_f = parse_wider_offset(Y, config)
-        if len(boxes_f) > 0:
-            # 最下边长 scale > 12 (length > 1.308 mm) 的 bounding box 
-            keep_index = np.where(np.minimum(boxes_f[:, 2] - boxes_f[:, 0], boxes_f[:, 3] - boxes_f[:, 1]) >= 12)[0]
-            boxes = boxes_f[keep_index, :]
-        if len(boxes_f) > 0:
-            boxes_f[:, [0, 2]] = img_s.shape[1] - boxes_f[:, [2, 0]]
-            boxes_f[:, 0:4:2] = boxes_f[:, 0:4:2] / scale_w # 此时的 boxes 是在 img_h_new 上检测出来的，所以还要还原到原来的 img_h 上 
-            boxes_f[:, 1:4:2] = boxes_f[:, 1:4:2] / scale_h
-        else:
-            boxes_f = np.empty(shape=[0, 5], dtype=np.float32)
-    return np.row_stack((boxes, boxes_f)) if boxes_f else boxes
+        img_f = cv2.flip(img, 1) # flip horizontally
+        imgs.append(img_f)
+    imgs = [x.astype(np.float32) for x in imgs]
+    imgs = np.array(imgs)
+    for i in range(3):
+        imgs[:, :, :, i] -= channel_mean[i]
+    imgs = torch.from_numpy(imgs).permute(0, 3, 1, 2)
+    return imgs
 
 
-def im_det_ms_pyramid(image, model, config, max_im_shrink):
-    # shrink detecting and shrink only detect big face
-    det_s = detect_face(image, model, config, 0.5)
-    index = np.where(np.maximum(det_s[:, 2] - det_s[:, 0] + 1, det_s[:, 3] - det_s[:, 1] + 1) > 64)[0]
-    det_s = det_s[index, :]
+def generate_bbox(pred, config):
+    center_thresh = float(config['center_thresh'])
+    center_cls, hw_regr, offset = pred
+    # remove center points whose score is less than center_thresh
+    center_inds = center_cls > center_thresh
+    # generate bounding box
+    center_cls = center_cls * center_inds
+    hw_regr = hw_regr * center_inds
+    offset = offset * center_inds
+    bboxes = []
+    inds = torch.nonzero(center_cls)
+    for x in inds:
+        batch, channel, height, width = x
+        score = center_cls[batch, channel, height, width]
+        scale_h = hw_regr[batch, 0, height, width]
+        scale_w = hw_regr[batch, 1, height, width]
+        # make offset on the center points
+        # the type of offset is float, the type of center coordinate is integer
+        offset_y = offset[batch, 0, height, width]
+        offset_x = offset[batch, 1, height, width]
+        # the first element stands for origin image if 0 otherwise for flipped image
+        box = [0 if batch == 0 else 1,  width + offset_x, height + offset_y, math.exp(scale_w), math.exp(scale_h), score]
+        bboxes.append(box)
+    return np.array(bboxes)
+    
 
-    det_temp = detect_face(image, model, config, 0.75)
-    index = np.where(np.maximum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) > 32)[0]
-    det_temp = det_temp[index, :]
-    det_s = np.row_stack((det_s, det_temp))
+def remap_bbox_to_input(bboxes, config):
+    downsize = int(config['downsize'])
+    testsize = config['testsize']
+    bboxes[:, 3] = bboxes[:, 3] * downsize
+    bboxes[:, 4] = bboxes[:, 4] * downsize
+    bboxes[:, 1] = np.clip((bboxes[:, 1] + 0.5) * downsize - bboxes[:, 3] / 2, 0, testsize[1]) # x1
+    bboxes[:, 2] = np.clip((bboxes[:, 2] + 0.5) * downsize - bboxes[:, 4] / 2, 0, testsize[0]) # y1
+    bboxes[:, 3] = np.clip(bboxes[:, 1] + bboxes[:, 3], 0, testsize[1])
+    bboxes[:, 4] = np.clip(bboxes[:, 2] + bboxes[:, 4], 0, testsize[0])
+    return bboxes
 
-    det_temp = detect_face(image, model, config, 0.25)
-    index = np.where(np.maximum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) > 96)[0]
-    det_temp = det_temp[index, :]
-    det_s = np.row_stack((det_s, det_temp))
 
-    st = [1.25, 1.5, 1.75, 2.0, 2.25]
-    for i in range(len(st)):
-        if (st[i] <= max_im_shrink):
-            det_temp = detect_face(image, model, config, st[i])
-            # Enlarged images are only used to detect small faces.
-            # 放大倍数越大，检测到的目标越小
-            if st[i] == 1.25:
-                index = np.where(
-                    np.minimum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) < 128)[0]
-                det_temp = det_temp[index, :]
-            elif st[i] == 1.5:
-                index = np.where(
-                    np.minimum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) < 96)[0]
-                det_temp = det_temp[index, :]
-            elif st[i] == 1.75:
-                index = np.where(
-                    np.minimum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) < 64)[0]
-                det_temp = det_temp[index, :]
-            elif st[i] == 2.0:
-                index = np.where(
-                    np.minimum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) < 48)[0]
-                det_temp = det_temp[index, :]
-            elif st[i] == 2.25:
-                index = np.where(
-                    np.minimum(det_temp[:, 2] - det_temp[:, 0] + 1, det_temp[:, 3] - det_temp[:, 1] + 1) < 32)[0]
-                det_temp = det_temp[index, :]
-            det_s = np.row_stack((det_s, det_temp))
-    return det_s
-			
+def soft_nms(bboxes, score, thresh):
+    soft_iou_thresh = thresh
+    bbox_thresh = score
+    sorted_inds = np.argsort(bboxes[:, 4])[::-1]
+    sorted_bboxes = bboxes[sorted_inds]
+    valid_inds = sorted_bboxes[:, 4] > bbox_thresh
+    sorted_bboxes = sorted_bboxes[valid_inds]
+    result = []
+    len_r = len(sorted_bboxes)
+    while len_r > 1:
+        cur = sorted_bboxes[0]
+        # calculate the iou between this box and the other boxes
+        y1, x1 = sorted_bboxes[1:, 1], sorted_bboxes[1:, 0]
+        top, left = y1, x1
+        top[top < cur[1]] = cur[1]
+        left[left < cur[0]] = cur[0]
+        y2, x2 = sorted_bboxes[1:, 3], sorted_bboxes[1:, 2]
+        bottom, right = y2, x2
+        bottom[bottom > cur[3]] = cur[3]
+        right[right > cur[2]] = cur[2]
+        intersection = (right - left) * (bottom - top)
+        union = (cur[2] - cur[0]) * (cur[3] - cur[1]) + (y2 - y1) * (x2 - x1) - intersection
+        iou = intersection / union
+        iou[iou < 0] = 0
 
-def generate_bbox(img, model, config):
-    # 0x7fffffff 是 int32 类型数的最大值 
-    # 为什么这么算呢? 
-    max_im_shrink = (0x7fffffff / 577.0 / (img.shape[0] * img.shape[1])) ** 0.5  # the max size of input image
-    shrink = max_im_shrink if max_im_shrink < 1 else 1
-    det0 = detect_face(img, model, config)
-    # print(det0)
-    # det1 = im_det_ms_pyramid(img, model, config, max_im_shrink)
-    # print(det1)
-    # merge all test results via bounding box voting
-    det = np.row_stack((det0, det1))
-    # 去除小于 3 毫米的 bounding box
-    keep_index = np.where(np.minimum(det[:, 2] - det[:, 0], det[:, 3] - det[:, 1]) >= 3)[0]
-    det = det[keep_index, :]
-    dets = soft_bbox_vote(det, thre=0.4)
-    keep_index = np.where((dets[:, 2] - dets[:, 0] + 1) * (dets[:, 3] - dets[:, 1] + 1) >= 6 ** 2)[0]
-    dets = dets[keep_index, :]
-    return dets
+        # decrease the score of bounding box whose iou with cur is more than a soft_iou_thresh
+        scores = sorted_bboxes[1:, 4]
+        decrease_inds = iou >= soft_iou_thresh
+        scores[decrease_inds] = scores[decrease_inds] * (1 - iou[decrease_inds])
+        sorted_bboxes[1:, 4] = scores
+        bboxes = sorted_bboxes[1:, 4]
+        sorted_inds = np.argsort(bboxes[:, 4])[::-1]
+        sorted_bboxes = bboxes[sorted_inds]
+        valid_inds = sorted_bboxes[:, 4] > bbox_thresh
+        sorted_bboxes = sorted_bboxes[valid_inds]
+        
+        len_r = len(sorted_bboxes)
+        result.append(cur)
+    if len_r == 1:
+        result.append(sorted_bboxes[0])
+    
+    if len(result) == 0:
+        print("no bounding boxes after softnms")
+        return np.empty(shape=[0, 5], dtype=np.float32)
+
+    return np.array(result)
+
+
+def nms(bboxes, config):
+    # bboxes is a list of 6 elements [0/1, center_x, center_y, height, width, score]
+    # sort the bboxes according to score
+    origin_bboxes = bboxes[bboxes[:, 0] == 0, :]
+    flipped_bboxes = bboxes[bboxes[:, 0] == 1, :]
+    testsize = config['testsize']
+    
+    thresh = float(config['soft_iou_thresh'])
+    score = float(config['bbox_score_thresh'])
+    origin_bboxes = soft_nms(origin_bboxes, score, thresh)
+    flipped_bboxes = soft_nms(flipped_bboxes, score, thresh)
+    flipped_bboxes[:, [0, 2]] = testsize[1] - flipped_bboxes[:, [2, 0]]
+    flipped_bboxes[:, [1, 3]] = testsize[0] - flipped_bboxes[:, [3, 1]]
+    
+    return np.vstack((origin_bboxes, flipped_bboxes))
+
+
+def scaled_inference(img, model, config, scale=1):
+    flip = int(config['flip'])
+    minimum_hw = int(config['minimum_hw'])
+    downsize = int(config['downsize'])
+    height, width = img.shape[:2]
+    # make sure the downsize is the scale betetween origin image and the output feature map
+    # in_image is a little larger than the origin image => how to fix this offset
+    # two ways: origin --scale--> scaled image --little adjust according to downsize--> actual_scale_h, actual_scale_w
+    # origin --little adjust according to downsize--> --scale--> scaled image--> actual_scale_h, actual_scale_w
+    # height * scale + offset, (height + offset) * scale
+    scaled_height, scaled_width = height * scale, width * scale
+    in_height, in_width = np.ceil(scaled_height / downsize) * downsize, np.ceil(scaled_width / downsize) * downsize
+    actual_scale_h, actual_scale_w = in_height / height, in_width / width # 在 in_height 和 in_width 上检测出的 bounding box，还要再除 actual scale 才能得到在原图上的 bounding box
+    
+    config['testsize'] = [int(in_height), int(in_width)]
+    imgs = prepare_images(img, config) # prepare input for network; numpy to tensor
+    print(imgs.shape)
+    pred = model(imgs, torch.cuda.is_available()) # flip (batch, channel, height, width)
+    bboxes = generate_bbox(pred, config)
+    if len(bboxes) == 0:
+        print('generate 0 bounding boxes from output feature map')
+        return np.empty(shape=[0, 5], dtype=np.float32)
+    # center_x, center_y, scale_h, scale_w => x1, y1, x2, y2, score
+    bboxes = remap_bbox_to_input(bboxes, config)
+    # origin -> nms -> result1; flip -> nms -> transfer -> result2; thresh=0.6
+    bboxes = nms(bboxes, config, in_height, in_width)
+    # remap from input to origin, actual_scale_h, actual_scale_w; origin + flip
+    keep_inds = np.minimum(bboxes[:, 2] - bboxes[:, 0], bboxes[:, 3] - bboxes[:, 1]) >= minimum_hw
+    bboxes = bboxes[keep_inds]
+    bboxes[:, [0, 2]] /= actual_scale_w
+    bboxes[:, [1, 3]] /= actual_scale_h
+
+    return bboxes
+    
+
+def pyramid_inference(img, model, config):
+    result = []
+    scales = [float(x) for x in config['shrink_scales'].split(',')]
+    limits = [int(x) for x in config['shrink_limits'].split(',')]
+    for ind, s in enumerate(scales):
+        print("pred on scale: {}".format(s))
+        bboxes = scaled_inference(img, model, config, s)
+        keep_inds = np.maximum(bboxes[:, 2] - bboxes[:, 0] + 1, bboxes[:, 3] - bboxes[:, 1] + 1) > limits[ind]
+        bboxes = bboxes[keep_inds]
+        result.append(bboxes)
+    
+    scales = [float(x) for x in config['enlarge_scales'].split(',')]
+    limits = [int(x) for x in config['enlarge_limits'].split(',')]
+    for ind, s in enumerate(scales):
+        print("pred on scale: {}".format(s))
+        bboxes = scaled_inference(img, model, config, s)
+        keep_inds = np.minimum(bboxes[:, 2] - bboxes[:, 0] + 1, bboxes[:, 3] - bboxes[:, 1] + 1) < limits[ind]
+        bboxes = bboxes[keep_inds]
+        result.append(bboxes)
+    
+    return np.vstack(result)
+
+
+def pred(img, model, config):
+    # 不同尺度检测 + 图片翻转检测
+    # 原始图片 --缩放 scale1--> 网络输入 --卷积 scale2--> 网络输出
+    # 网络输出 * scale2  --> 网络输入 --> * scale1 映射到原图
+    det_origin = scaled_inference(img, model, config, 1)
+    det_pyramid = pyramid_inference(img, model, config)
+    # result1 + result2 + result3 -> nms; thresh=0.4
+    result = np.vstack((det_origin, det_pyramid))
+
+    minimum_hw_1 = int(config['minimum_hw_1'])
+    keep_inds = np.minimum(result[:, 2] - result[:, 0], result[:, 3] - result[:, 1]) >=  minimum_hw_1
+    result = result[keep_inds]
+
+    score = float(config['bbox_score_thresh'])
+    thresh = float(config['soft_iou_thresh_1'])
+    result = soft_nms(bboxes, score, thresh)
+
+    minimum_area = int(config['minimum_area'])
+    keep_inds = (dets[:, 2] - dets[:, 0] + 1) * (dets[:, 3] - dets[:, 1] + 1) >= minimum_area
+    result = result[keep_index]
+    return result

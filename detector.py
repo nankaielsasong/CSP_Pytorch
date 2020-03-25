@@ -3,7 +3,7 @@ import cv2
 import torch
 import numpy as np 
 from models import CSPNet
-from models.py_utils import generate_bbox
+from models.py_utils import pred
 from utils import parse, parse_cfg, visualize
 
 def get_test_input():
@@ -21,8 +21,8 @@ print('load model....')
 model.load_state_dict(torch.load('CSP_Pytorch_e382_l0.pkl'))
 print('done')
 
-input = cv2.imread('/home/zk/Desktop/0_Parade_Parade_0_519.jpg')
+input = cv2.imread('D:\\0_Parade_Parade_0_519.jpg')
 test_config = parse_cfg('configs/test.cfg')
 test_config = test_config[0]
-result = generate_bbox(input, model, test_config)
+result = pred(input, model, test_config)
 print(result.shape)
